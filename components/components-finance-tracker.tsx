@@ -29,6 +29,7 @@ import { Progress } from "@/components/ui/progress"
 import { useToast } from "@/hooks/use-toast"
 import { Toaster } from "@/components/ui/toaster"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { supabase } from "@/lib/supabase"
 import { ArrowUpRight, ArrowDownRight, IndianRupee, PiggyBank, Trash2, Settings, Download, Upload, Target, AlertTriangle, TrendingUp } from 'lucide-react'
 
 ChartJS.register(
@@ -199,11 +200,50 @@ export default function FinanceTracker() {
   }
 
   useEffect(() => {
-    const storedData = localStorage.getItem('financeTrackerData')
-    if (storedData) {
-      const parsedData = JSON.parse(storedData)
-      updateAllData(parsedData)
+    const loadInitialData = async () => {
+      const storedData = localStorage.getItem('financeTrackerData')
+      if (storedData) {
+        const parsedData = JSON.parse(storedData)
+        updateAllData(parsedData)
+      }
+
+      try {
+        const [transactionsRes, goalsRes] = await Promise.all([
+          supabase.from('transactions').select('*').order('date', { ascending: false }),
+          supabase.from('goals').select('*').order('deadline', { ascending: true }),
+        ])
+
+        if (!transactionsRes.error && transactionsRes.data) {
+          setTransactions(
+            transactionsRes.data.map((tx: any) => ({
+              id: Number(tx.id),
+              date: tx.date,
+              description: tx.description,
+              amount: Number(tx.amount),
+              type: tx.type,
+              category: tx.category,
+              account: tx.account,
+            }))
+          )
+        }
+
+        if (!goalsRes.error && goalsRes.data) {
+          setGoals(
+            goalsRes.data.map((goal: any) => ({
+              id: Number(goal.id),
+              name: goal.name,
+              target: Number(goal.target),
+              current: Number(goal.current),
+              deadline: goal.deadline,
+            }))
+          )
+        }
+      } catch {
+        // Keep localStorage data when database is unavailable.
+      }
     }
+
+    loadInitialData()
   }, [])
 
   useEffect(() => {
@@ -300,7 +340,7 @@ export default function FinanceTracker() {
     }
   }
 
-  const addTransaction = () => {
+  const addTransaction = async () => {
     if (newTransaction.description && newTransaction.amount && newTransaction.category && newTransaction.account) {
       if (!validateNumber(newTransaction.amount)) {
         toast({
@@ -310,7 +350,7 @@ export default function FinanceTracker() {
       }
       const amount = newTransaction.type === 'income' ? parseFloat(newTransaction.amount) : -parseFloat(newTransaction.amount)
       const transaction: Transaction = {
-        id: transactions.length + 1,
+        id: Date.now(),
         date: newTransaction.date,
         description: newTransaction.description,
         amount,
@@ -318,7 +358,38 @@ export default function FinanceTracker() {
         category: newTransaction.category,
         account: newTransaction.account,
       }
-      const updatedTransactions = [transaction, ...transactions]
+      let savedTransaction = transaction
+
+      try {
+        const { data, error } = await supabase
+          .from('transactions')
+          .insert({
+            date: transaction.date,
+            description: transaction.description,
+            amount: transaction.amount,
+            type: transaction.type,
+            category: transaction.category,
+            account: transaction.account,
+          })
+          .select()
+          .single()
+
+        if (!error && data) {
+          savedTransaction = {
+            id: Number(data.id),
+            date: data.date,
+            description: data.description,
+            amount: Number(data.amount),
+            type: data.type,
+            category: data.category,
+            account: data.account,
+          }
+        }
+      } catch {
+        // Continue with local state/localStorage fallback.
+      }
+
+      const updatedTransactions = [savedTransaction, ...transactions]
       setTransactions(updatedTransactions)
       updateFinances(amount, newTransaction.account)
       setNewTransaction({ description: '', amount: '', type: 'expense', category: '', date: new Date().toISOString().split('T')[0], account: 'chequing' })
@@ -334,7 +405,7 @@ export default function FinanceTracker() {
     }
   }
 
-  const addGoal = () => {
+  const addGoal = async () => {
     if (newGoal.name && newGoal.target && newGoal.current && newGoal.deadline) {
       if (!validateNumber(newGoal.target) || !validateNumber(newGoal.current)) {
         toast({
@@ -343,13 +414,40 @@ export default function FinanceTracker() {
         return
       }
       const goal: Goal = {
-        id: goals.length + 1,
+        id: Date.now(),
         name: newGoal.name,
         target: parseFloat(newGoal.target),
         current: parseFloat(newGoal.current),
         deadline: newGoal.deadline,
       }
-      const updatedGoals = [...goals, goal]
+
+      let savedGoal = goal
+      try {
+        const { data, error } = await supabase
+          .from('goals')
+          .insert({
+            name: goal.name,
+            target: goal.target,
+            current: goal.current,
+            deadline: goal.deadline,
+          })
+          .select()
+          .single()
+
+        if (!error && data) {
+          savedGoal = {
+            id: Number(data.id),
+            name: data.name,
+            target: Number(data.target),
+            current: Number(data.current),
+            deadline: data.deadline,
+          }
+        }
+      } catch {
+        // Continue with local state/localStorage fallback.
+      }
+
+      const updatedGoals = [...goals, savedGoal]
       setGoals(updatedGoals)
       setNewGoal({ name: '', target: '', current: '', deadline: '' })
       saveData()
@@ -412,9 +510,15 @@ export default function FinanceTracker() {
     }
   }
 
-  const deleteTransaction = (id: number) => {
+  const deleteTransaction = async (id: number) => {
     const transactionToDelete = transactions.find(t => t.id === id)
     if (transactionToDelete) {
+      try {
+        await supabase.from('transactions').delete().eq('id', id)
+      } catch {
+        // Keep local delete behavior even if DB fails.
+      }
+
       const updatedTransactions = transactions.filter(t => t.id !== id)
       setTransactions(updatedTransactions)
       updateFinances(-transactionToDelete.amount, transactionToDelete.account)
@@ -425,7 +529,13 @@ export default function FinanceTracker() {
     }
   }
 
-  const deleteGoal = (id: number) => {
+  const deleteGoal = async (id: number) => {
+    try {
+      await supabase.from('goals').delete().eq('id', id)
+    } catch {
+      // Keep local delete behavior even if DB fails.
+    }
+
     const updatedGoals = goals.filter(g => g.id !== id)
     setGoals(updatedGoals)
     saveData()
@@ -734,7 +844,16 @@ export default function FinanceTracker() {
     ],
   }
 
-  const resetAllData = () => {
+  const resetAllData = async () => {
+    try {
+      await Promise.all([
+        supabase.from('transactions').delete().gte('id', 0),
+        supabase.from('goals').delete().gte('id', 0),
+      ])
+    } catch {
+      // Local reset still runs even if DB reset fails.
+    }
+
     localStorage.removeItem('financeTrackerData')
     setChequingBalance(0)
     setSavingsBalance(0)
