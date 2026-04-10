@@ -208,9 +208,10 @@ export default function FinanceTracker() {
       }
 
       try {
-        const [transactionsRes, goalsRes] = await Promise.all([
+        const [transactionsRes, goalsRes, userDataRes] = await Promise.all([
           supabase.from('transactions').select('*').order('date', { ascending: false }),
           supabase.from('goals').select('*').order('deadline', { ascending: true }),
+          supabase.from('user_data').select('*').limit(1).single(),
         ])
 
         if (!transactionsRes.error && transactionsRes.data) {
@@ -237,6 +238,23 @@ export default function FinanceTracker() {
               deadline: goal.deadline,
             }))
           )
+        }
+
+          if (!userDataRes.error && userDataRes.data && !storedData) {
+          const profile = userDataRes.data
+          updateAllData({
+            chequingBalance: Number(profile.chequingBalance) || 0,
+            savingsBalance: Number(profile.savingsBalance) || 0,
+            income: Number(profile.monthlyIncome) || 0,
+            expenses: Number(profile.monthlyExpenses) || 0,
+            userData: {
+              name: profile.name ?? '',
+              chequingBalance: profile.chequingBalance?.toString() ?? '0',
+              savingsBalance: profile.savingsBalance?.toString() ?? '0',
+              monthlyIncome: profile.monthlyIncome?.toString() ?? '0',
+              monthlyExpenses: profile.monthlyExpenses?.toString() ?? '0',
+            },
+          })
         }
       } catch {
         // Keep localStorage data when database is unavailable.
@@ -291,6 +309,24 @@ export default function FinanceTracker() {
     localStorage.setItem('financeTrackerData', JSON.stringify(dataToSave))
   }
 
+  const persistUserDataToDb = async (data: UserData) => {
+    try {
+      await supabase.from('user_data').upsert(
+        {
+          id: 1,
+          name: data.name,
+          chequingBalance: parseFloat(data.chequingBalance) || 0,
+          savingsBalance: parseFloat(data.savingsBalance) || 0,
+          monthlyIncome: parseFloat(data.monthlyIncome) || 0,
+          monthlyExpenses: parseFloat(data.monthlyExpenses) || 0,
+        },
+        { onConflict: 'id' }
+      )
+    } catch {
+      // Ignore DB sync failures and keep local storage as fallback.
+    }
+  }
+
   const validateUserData = (): boolean => {
     const newErrors: Partial<UserData> = {}
     if (!validateName(userData.name)) {
@@ -312,7 +348,7 @@ export default function FinanceTracker() {
     return Object.keys(newErrors).length === 0
   }
 
-  const handleQuestionnaireSubmit = () => {
+  const handleQuestionnaireSubmit = async () => {
     if (validateUserData()) {
       const initialChequingBalance = parseFloat(userData.chequingBalance)
       const initialSavingsBalance = parseFloat(userData.savingsBalance)
@@ -334,6 +370,7 @@ export default function FinanceTracker() {
 
       setShowQuestionnaire(false)
       saveData()
+      await persistUserDataToDb(userData)
       toast({
         description: 'Welcome to FinancialFlow 💸! Your initial data has been saved.',
       })
@@ -849,6 +886,7 @@ export default function FinanceTracker() {
       await Promise.all([
         supabase.from('transactions').delete().gte('id', 0),
         supabase.from('goals').delete().gte('id', 0),
+        supabase.from('user_data').delete().eq('id', 1),
       ])
     } catch {
       // Local reset still runs even if DB reset fails.
@@ -876,7 +914,7 @@ export default function FinanceTracker() {
     setUserData(prev => ({ ...prev, [field]: value }))
   }
 
-  const saveSettings = () => {
+  const saveSettings = async () => {
     if (validateUserData()) {
       const newChequingBalance = parseFloat(userData.chequingBalance)
       const newSavingsBalance = parseFloat(userData.savingsBalance)
@@ -889,6 +927,7 @@ export default function FinanceTracker() {
       setExpenses(newMonthlyExpenses)
       
       saveData()
+      await persistUserDataToDb(userData)
       setShowSettings(false)
       toast({
         description: "Settings updated successfully",

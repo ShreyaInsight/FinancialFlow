@@ -15,7 +15,7 @@ const geistMono = localFont({
 
 export const metadata: Metadata = {
   title: "FinancialFlow 💸",
-  description: "Your personal financial companion - Developed by Sunny Patel 💰",
+  description: "Your personal financial companion - Developed by Shreya Chauhan",
 };
 
 export default function RootLayout({
